@@ -5,160 +5,170 @@ Go-сервис между Quote Service и Mobile App. Единственная
 ## Задачи
 
 - Превращать gRPC-вызовы Quote Service в REST API
-- Кэшировать ответы, чтобы выдерживать частый polling от мобилки
-- Проверять JWT-токены
-- Ограничивать частоту запросов
+- Кэшировать ответы для выдерживания polling от мобилки
+- Проверять JWT-токены, ограничивать частоту запросов
 
-## Структура проекта
+## Точка входа и конфиг
 
 | Путь | Что внутри |
-| --- | --- |
-| `cmd/main.go` | Точка входа, инициализация зависимостей, запуск HTTP-сервера |
-| `internal/handler/quote.go` | HTTP handlers для котировок: getQuote, batchQuotes, getHistory |
-| `internal/handler/portfolio.go` | HTTP handlers для портфеля: getPortfolio, getPositions |
-| `internal/handler/order.go` | HTTP handlers для заявок: placeOrder, cancelOrder, getOrders |
-| `internal/cache/local.go` | In-memory кэш с TTL |
-| `internal/middleware/auth.go` | JWT валидация из заголовка Authorization |
-| `internal/middleware/ratelimit.go` | Rate limiting: 60/мин котировки, 10/мин ордера |
-| `internal/middleware/logging.go` | Логирование метода, статуса, времени выполнения |
-| `internal/grpc/client.go` | gRPC клиент к Quote Service, пул соединений |
-| `configs/config.yaml` | Конфигурация: порт, адрес Quote Service, JWT secret |
+|------|-----------|
+| `cmd/main.go` | Инициализация, запуск HTTP-сервера |
+| `configs/config.yaml` | Порт, адрес Quote Service, JWT secret |
 | `go.mod` | Зависимости |
-| `Makefile` | Команды: запуск, линт, тесты |
+| `Makefile` | Запуск, линт, тесты |
+
+## Handlers
+
+| Путь | Что внутри |
+|------|-----------|
+| `internal/handler/quote.go` | Котировки: getQuote, batchQuotes, getHistory |
+| `internal/handler/portfolio.go` | Портфель: getPortfolio, getPositions |
+| `internal/handler/order.go` | Заявки: placeOrder, cancelOrder, getOrders |
+
+## Middleware и Cache
+
+| Путь | Что внутри |
+|------|-----------|
+| `internal/cache/local.go` | In-memory кэш с TTL |
+| `internal/middleware/auth.go` | JWT валидация |
+| `internal/middleware/ratelimit.go` | Rate limiting |
+| `internal/middleware/logging.go` | Логирование запросов |
+
+## gRPC Client
+
+| Путь | Что внутри |
+|------|-----------|
+| `internal/grpc/client.go` | Подключение к Quote Service, пул соединений |
 
 ## Слои
 
 | Слой | Пакет | Что внутри |
-| --- | --- | --- |
-| Handler | `internal/handler` | HTTP handlers, маппинг запросов в gRPC |
+|------|-------|-----------|
+| Handler | `internal/handler` | HTTP handlers, маппинг в gRPC |
 | Cache | `internal/cache` | In-memory кэш с TTL |
 | Middleware | `internal/middleware` | Auth, rate limit, logging |
 | gRPC Client | `internal/grpc` | Подключение к Quote Service |
 
 ## Кэширование
 
-Gateway хранит в памяти последние котировки с TTL. Когда приходит запрос — сначала проверяет кэш. Только при промахе идёт в Quote Service по gRPC.
-
 | Данные | TTL | Почему |
-| --- | --- | --- |
-| Котировка | 1 секунда | Котировки меняются часто, но не чаще раза в секунду |
-| История свечей | 30 секунд | История не меняется так быстро |
-| Портфель | 5 секунд | Портфель меняется только после сделок |
+|--------|-----|--------|
+| Котировка | 1 секунда | Меняется часто |
+| История свечей | 30 секунд | История стабильна |
+| Портфель | 5 секунд | Меняется только после сделок |
 
-Кэш in-memory, без внешней Redis. Это проще и быстрее для одного инстанса Gateway. Если нужно масштабировать — можно добавить общий Redis.
+Кэш in-memory. При масштабировании можно вынести в общий Redis.
 
-## REST API
+## REST API — Quotes
 
-### Quotes
-
-| Метод | Путь | Описание | Параметры | Ответ |
-| --- | --- | --- | --- | --- |
-| GET | `/api/v1/quotes/{ticker}` | Текущая котировка по тикеру | ticker в пути | Quote |
-| POST | `/api/v1/quotes/batch` | Пакет котировок для списка | tickers: string\[\] | Quote\[\] |
-| GET | `/api/v1/quotes/{ticker}/history` | История свечей | interval, from, to в query | Candle\[\] |
+| Метод | Путь | Описание | Ответ |
+|-------|------|----------|-------|
+| GET | `/api/v1/quotes/{ticker}` | Текущая котировка | Quote |
+| POST | `/api/v1/quotes/batch` | Пакет котировок | Quote[] |
+| GET | `/api/v1/quotes/{ticker}/history` | История свечей | Candle[] |
 
 Параметры history:
 
-| Параметр | Тип | Описание | Пример |
-| --- | --- | --- | --- |
-| interval | string | Интервал свечи: 1M, 5M, 15M, 1H, 1D, 1W | `1D` |
-| from | string | Начало периода, ISO 8601 | `2024-01-01T00:00:00Z` |
-| to | string | Конец периода, ISO 8601 | `2024-01-02T00:00:00Z` |
+| Параметр | Тип | Пример |
+|----------|-----|--------|
+| interval | string | `1M`, `5M`, `1H`, `1D` |
+| from | ISO 8601 | `2024-01-01T00:00:00Z` |
+| to | ISO 8601 | `2024-01-02T00:00:00Z` |
 
-### Portfolio
+## REST API — Portfolio
 
 | Метод | Путь | Описание | Ответ |
-| --- | --- | --- | --- |
-| GET | `/api/v1/portfolio` | Общая стоимость портфеля, P&L за день | Portfolio |
-| GET | `/api/v1/portfolio/positions` | Список открытых позиций | Position\[\] |
+|-------|------|----------|-------|
+| GET | `/api/v1/portfolio` | Общая стоимость, P&L | Portfolio |
+| GET | `/api/v1/portfolio/positions` | Список позиций | Position[] |
 
-### Orders
+## REST API — Orders
 
 | Метод | Путь | Описание | Тело запроса | Ответ |
-| --- | --- | --- | --- | --- |
+|-------|------|----------|-------------|-------|
 | POST | `/api/v1/orders` | Разместить заявку | OrderRequest | OrderResponse |
 | DELETE | `/api/v1/orders/{id}` | Отменить заявку | — | 204 |
-| GET | `/api/v1/orders` | Список заявок | status в query (опционально) | Order\[\] |
+| GET | `/api/v1/orders` | Список заявок | status (опционально) | Order[] |
 
 Тело POST /orders:
 
-| Поле | Тип | Описание | Пример |
-| --- | --- | --- | --- |
-| ticker | string | Тикер инструмента | `AAPL` |
-| side | string | Направление: buy или sell | `buy` |
-| quantity | int | Количество лотов | `10` |
-| price | float | Цена (для limit) | `150.00` |
-| order_type | string | Тип: market или limit | `limit` |
+| Поле | Тип | Пример |
+|------|-----|--------|
+| ticker | string | `AAPL` |
+| side | string | `buy`, `sell` |
+| quantity | int | `10` |
+| price | float | `150.00` |
+| order_type | string | `market`, `limit` |
 
-### User
+## REST API — User
 
 | Метод | Путь | Описание | Ответ |
-| --- | --- | --- | --- |
-| GET | `/api/v1/user` | Профиль пользователя | User |
+|-------|------|----------|-------|
+| GET | `/api/v1/user` | Профиль | User |
 
 ## Формат ответов
 
 ### Quote
 
-| Поле | Тип | Описание |
-| --- | --- | --- |
-| ticker | string | Тикер |
-| price | float | Последняя цена |
-| volume | int | Объём |
-| timestamp | int64 | Unix timestamp в миллисекундах |
-| bid | float | Цена покупки |
-| ask | float | Цена продажи |
+| Поле | Тип |
+|------|-----|
+| ticker | string |
+| price | float |
+| volume | int |
+| timestamp | int64 |
+| bid | float |
+| ask | float |
 
 ### Candle
 
-| Поле | Тип | Описание |
-| --- | --- | --- |
-| ticker | string | Тикер |
-| open | float | Цена открытия |
-| high | float | Максимум |
-| low | float | Минимум |
-| close | float | Цена закрытия |
-| volume | int | Объём |
-| timestamp | int64 | Unix timestamp |
+| Поле | Тип |
+|------|-----|
+| ticker | string |
+| open | float |
+| high | float |
+| low | float |
+| close | float |
+| volume | int |
+| timestamp | int64 |
 
 ### Position
 
-| Поле | Тип | Описание |
-| --- | --- | --- |
-| ticker | string | Тикер |
-| quantity | int | Количество |
-| avg_price | float | Средняя цена покупки |
-| current_price | float | Текущая цена |
-| pnl | float | Прибыль/убыток |
-| pnl_percent | float | Прибыль/убыток в процентах |
+| Поле | Тип |
+|------|-----|
+| ticker | string |
+| quantity | int |
+| avg_price | float |
+| current_price | float |
+| pnl | float |
+| pnl_percent | float |
 
 ### Order
 
-| Поле | Тип | Описание |
-| --- | --- | --- |
-| id | string | ID заявки |
-| ticker | string | Тикер |
-| side | string | buy / sell |
-| quantity | int | Количество |
-| price | float | Цена |
-| order_type | string | market / limit |
-| status | string | new, filled, cancelled, rejected |
-| created_at | string | Время создания, ISO 8601 |
+| Поле | Тип |
+|------|-----|
+| id | string |
+| ticker | string |
+| side | string |
+| quantity | int |
+| price | float |
+| order_type | string |
+| status | string |
+| created_at | string |
 
 ## Middleware
 
-| Middleware | Файл | Что делает |
-| --- | --- | --- |
-| Auth | `middleware/auth.go` | Проверяет JWT из заголовка Authorization. Без токена — 401 |
-| Rate Limit | `middleware/ratelimit.go` | 60 запросов/мин для котировок, 10/мин для ордеров. Превышение — 429 |
-| Logging | `middleware/logging.go` | Логирует метод, путь, статус, время выполнения |
+| Middleware | Что делает |
+|------------|-----------|
+| Auth | Проверяет JWT из Authorization. Без токена — 401 |
+| Rate Limit | 60/мин котировки, 10/мин ордера. Превышение — 429 |
+| Logging | Метод, статус, время выполнения |
 
-## Обработка ошибок
+## Ошибки
 
 | HTTP код | Когда |
-| --- | --- |
-| 400 | Неверный запрос — нет обязательных полей |
-| 401 | Нет или просрочен JWT-токен |
+|----------|-------|
+| 400 | Неверный запрос |
+| 401 | Нет или просрочен JWT |
 | 404 | Тикер не найден |
 | 429 | Rate limit превышен |
 | 502 | Quote Service недоступен |
