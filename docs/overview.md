@@ -13,24 +13,24 @@
 
 Kernel Driver — модуль ядра Linux. Работает как системный поток (kernel thread), непрерывно читает котировки из внешнего источника и пишет их в character device `/dev/quotes`.
 
-Quote Service открывает `/dev/quotes` и читает котировки через системные вызовы `read()` и `poll()`. Это стандартное взаимодействие user space ↔ kernel space — как работа с любым устройством.
+Quote Service открывает `/dev/quotes` и читает котировки через системные вызовы `read()` и `poll()`. Это стандартное взаимодействие user space ↔ kernel space.
 
 Quote Service отдаёт котировки по gRPC — это внутренний протокол, наружу он не выходит. Gateway подписывается на gRPC-стрим от Quote Service и одновременно принимает REST-запросы от мобильного приложения.
 
-Mobile App общается только с Gateway и только по REST. Никаких прямых вызовов к Quote Service, никаких WebSocket.
+Mobile App общается только с Gateway и только по REST.
 
 ## Kernel Driver
 
-Драйвер встраивается в ядро Linux как loadable kernel module (.ko). При загрузке создаёт character device `/dev/quotes` и запускает kernel thread, который непрерывно опрашивает внешний источник котировок.
+Драйвер — loadable kernel module (.ko). При загрузке создаёт character device `/dev/quotes` и запускает kernel thread.
 
 | Компонент драйвера | Что делает |
 |--------------------|-----------|
 | Kernel thread | Системный поток, читает котировки из внешнего источника |
 | Character device | `/dev/quotes`, интерфейс для user space |
 | Ring buffer | Кольцевой буфер в памяти ядра, хранит последние котировки |
-| Poll/waitqueue | Будит процесс Quote Service при появлении новых данных |
+| Poll/waitqueue | Будит Quote Service при появлении новых данных |
 
-Quote Service открывает `/dev/quotes` и вызывает `poll()` — ожидает данные. Когда kernel thread получает новую котировку, он кладёт её в ring buffer и будит ожидающий процесс через waitqueue. Quote Service вызывает `read()` и забирает данные.
+Подробнее: [Kernel Driver](../kernel-driver/README.md)
 
 ## Real-time через polling
 
